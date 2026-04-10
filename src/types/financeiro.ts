@@ -10,6 +10,7 @@ export interface Despesa {
   descricao: string;
   valor: number;
   tipo?: string;
+  orçamento?: string;
 }
 
 export interface DashboardData {
