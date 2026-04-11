@@ -4,14 +4,14 @@ import { useState, useEffect, useMemo } from 'react';
 import { fetchFinanceiro } from "@/lib/api";
 import { DashboardData } from "@/types/financeiro";
 import GraficoEvolucao from "@/components/GraficoEvolucao";
-import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
+import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, ComposedChart, Bar, Line, XAxis, YAxis, CartesianGrid, Legend } from 'recharts';
 
 const ACESSO_RESTRITO = "47881523000158";
 const COLORS_IOS = ['#007AFF', '#34C759', '#FF9500', '#AF52DE', '#FF3B30', '#5856D6', '#FFCC00', '#8E8E93', '#6366f1', '#ec4899'];
 
 export default function App() {
   const [data, setData] = useState<DashboardData | null>(null);
-  const [activeTab, setActiveTab] = useState<'inicio' | 'depositos' | 'despesas' | 'tipos'>('inicio');
+  const [activeTab, setActiveTab] = useState<'inicio' | 'depositos' | 'despesas' | 'tipos' | 'saldo'>('inicio');
   const [viewMode, setViewMode] = useState<'mes' | 'ano'>('mes'); 
   const [busca, setBusca] = useState('');
   const [carregando, setCarregando] = useState(true);
@@ -58,6 +58,16 @@ export default function App() {
     return key ? item[key] : "";
   };
 
+  const getSpecificLink = (item: any, type: 'nota' | 'pagamento') => {
+    const normalizar = (t: string) => t.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z]/g, "");
+    const key = Object.keys(item).find(k => {
+      const kn = normalizar(k);
+      return type === 'nota' ? (kn.includes('link') && kn.includes('nota')) : (kn.includes('link') && kn.includes('pagamento'));
+    });
+    const value = key ? item[key] : null;
+    return (value && String(value).startsWith('http')) ? value : null;
+  };
+
   const limparNumero = (v: any) => {
     if (typeof v === 'number') return v;
     const s = String(v || "0").replace(/R\$/g, '').replace(/%/g, '').replace(/\s/g, '').replace(/\.(?=[^,]*$)/g, '').replace(/\./g, '').replace(',', '.');
@@ -102,7 +112,7 @@ export default function App() {
   }, [data]);
 
   const processedData = useMemo(() => {
-    if (!data) return { lista: [], grafico: [], pizza: [] };
+    if (!data) return { lista: [], grafico: [], pizza: [], saldoAcumulado: [] };
 
     const baseListagem = activeTab === 'depositos' ? data.depositos : data.despesas;
     
@@ -162,10 +172,56 @@ export default function App() {
       percent: totalPizza > 0 ? ((pizzaMap[name] / totalPizza) * 100).toFixed(1) : "0"
     })).sort((a, b) => b.value - a.value);
 
-    return { lista, grafico, pizza };
+    const saldoMap: Record<string, { dep: number, des: number }> = {};
+    const todasDatas = new Set<string>();
+    data.depositos.forEach(i => {
+      const d = String(getGenericValue(i, 'data')).split(/[/-]/);
+      if (d.length >= 3) {
+        const chave = `${d[1]}/${d[2].slice(-2)}`;
+        todasDatas.add(chave);
+        if (!saldoMap[chave]) saldoMap[chave] = { dep: 0, des: 0 };
+        saldoMap[chave].dep += limparNumero(getGenericValue(i, 'valor'));
+      }
+    });
+    data.despesas.forEach(i => {
+      const d = String(getGenericValue(i, 'data')).split(/[/-]/);
+      if (d.length >= 3) {
+        const chave = `${d[1]}/${d[2].slice(-2)}`;
+        todasDatas.add(chave);
+        if (!saldoMap[chave]) saldoMap[chave] = { dep: 0, des: 0 };
+        saldoMap[chave].des += limparNumero(getGenericValue(i, 'valor'));
+      }
+    });
+
+    let acumulado = 0;
+    const saldoAcumulado = Array.from(todasDatas)
+      .sort((a, b) => {
+        const [mA, aA] = a.split('/'); const [mB, aB] = b.split('/');
+        return new Date(Number(`20${aA}`), Number(mA)-1).getTime() - new Date(Number(`20${mB}`), Number(mB)-1).getTime();
+      })
+      .map(mes => {
+        const dep = saldoMap[mes]?.dep || 0;
+        const des = saldoMap[mes]?.des || 0;
+        acumulado += (dep - des);
+        return { mes, dep, des, acumulado };
+      });
+
+    return { lista, grafico, pizza, saldoAcumulado };
   }, [data, activeTab, busca, viewMode, dataInicio, dataFim, filtroTipo, filtroOrcamento]);
 
   if (!mounted || carregando) return <div className="min-h-screen bg-[#F2F2F7] flex items-center justify-center font-bold text-[#007AFF]">Carregando Sky...</div>;
+
+  if (!isAutorizado) {
+    return (
+      <div className="min-h-screen bg-[#F2F2F7] flex items-center justify-center p-6 text-black">
+        <form onSubmit={(e) => { e.preventDefault(); if (senhaInput === ACESSO_RESTRITO) { setIsAutorizado(true); localStorage.setItem('sky_auth', 'true'); } }} className="w-full max-w-sm space-y-8 text-center">
+          <h1 className="text-5xl font-black italic">SKY</h1>
+          <input type="text" placeholder="CNPJ" className="w-full p-4 rounded-2xl border text-center font-bold bg-white" value={senhaInput} onChange={e => setSenhaInput(e.target.value)} />
+          <button className="w-full bg-[#007AFF] text-white py-4 rounded-2xl font-bold">Entrar</button>
+        </form>
+      </div>
+    );
+  }
 
   return (
     <main className="min-h-screen bg-[#F2F2F7] text-black font-sans pb-32">
@@ -176,7 +232,6 @@ export default function App() {
 
       <div className="max-w-4xl mx-auto px-4 pt-6 space-y-8">
         
-        {/* ABA INICIO - RESTAURAÇÃO COMPLETA */}
         {activeTab === 'inicio' && (
           <div className="space-y-10 animate-in fade-in duration-500">
             <section>
@@ -216,7 +271,29 @@ export default function App() {
           </div>
         )}
 
-        {/* ABA TIPOS */}
+        {activeTab === 'saldo' && (
+          <div className="space-y-6 animate-in slide-in-from-right-4 duration-500">
+            <h2 className="text-3xl font-extrabold px-2">Saldo Acumulado</h2>
+            <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200">
+              <div className="h-96 w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <ComposedChart data={processedData.saldoAcumulado}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#EEEEEE" />
+                    <XAxis dataKey="mes" axisLine={false} tickLine={false} tick={{fontSize: 10, fontWeight: 'bold'}} />
+                    <YAxis axisLine={false} tickLine={false} tick={{fontSize: 10}} tickFormatter={(v) => `R$${v/1000}k`} />
+                    <Tooltip formatter={(v: any) => fmtReal(v)} contentStyle={{borderRadius: '15px', border: 'none', boxShadow: '0 4px 12px rgba(0,0,0,0.1)'}} />
+                    <Legend verticalAlign="top" align="right" iconType="circle" />
+                    <Bar dataKey="dep" name="Depósitos" fill="#007AFF" radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="des" name="Despesas" fill="#FF3B30" radius={[4, 4, 0, 0]} />
+                    <Line type="monotone" dataKey="acumulado" name="Acumulado" stroke="#34C759" strokeWidth={3} dot={{ r: 4, fill: '#34C759' }} />
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+            <IOSCard label="Saldo Atual em Obra" value={fmtReal(processedData.saldoAcumulado[processedData.saldoAcumulado.length - 1]?.acumulado || 0)} color="text-[#34C759]" />
+          </div>
+        )}
+
         {activeTab === 'tipos' && (
           <div className="space-y-6 animate-in zoom-in-95 duration-500">
             <h2 className="text-3xl font-extrabold px-2">Análise de Custos</h2>
@@ -255,7 +332,6 @@ export default function App() {
           </div>
         )}
 
-        {/* LANÇAMENTOS */}
         {(activeTab === 'depositos' || activeTab === 'despesas') && (
           <div className="space-y-6 animate-in slide-in-from-bottom-4 duration-500 pb-10">
             <h2 className="text-3xl font-extrabold px-2">{activeTab === 'depositos' ? 'Depósitos' : 'Despesas'}</h2>
@@ -278,28 +354,47 @@ export default function App() {
               )}
               <input type="text" placeholder="Pesquisar..." className="w-full px-5 py-3 bg-[#F2F2F7] rounded-xl outline-none text-sm font-bold text-black" value={busca} onChange={e => setBusca(e.target.value)} />
             </div>
+
             <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-200 space-y-6">
               <p className="text-[11px] font-bold text-slate-400 uppercase tracking-widest px-1">Evolução do Período</p>
               <GraficoEvolucao dados={processedData.grafico} />
             </div>
+
             <div className="bg-white rounded-3xl shadow-sm border border-slate-200 overflow-hidden">
               <div className="divide-y divide-slate-100">
                 {processedData.lista.map((item, i) => {
                   const orc = getOrcValue(item);
                   const tipo = getGenericValue(item, 'tipo');
+                  const ln = getSpecificLink(item, 'nota');
+                  const lp = getSpecificLink(item, 'pagamento');
+
                   return (
-                    <div key={i} className="p-5 active:bg-slate-50 transition-colors">
-                      <div className="flex justify-between items-start mb-1">
-                        <p className="font-bold text-[15px] text-slate-900 flex-1 pr-4">{getGenericValue(item, 'descricao')}</p>
-                        <p className={`font-black text-[15px] ${activeTab === 'depositos' ? 'text-[#34C759]' : 'text-[#FF3B30]'}`}>
-                          {fmtReal(getGenericValue(item, 'valor'))}
-                        </p>
+                    <div key={i} className="p-5 active:bg-slate-50 transition-all duration-200">
+                      <div className="flex justify-between items-start gap-4 mb-2">
+                        <p className="font-bold text-[15px] text-slate-900 flex-1 leading-snug">{getGenericValue(item, 'descricao')}</p>
+                        <p className={`font-black text-[16px] whitespace-nowrap ${activeTab === 'depositos' ? 'text-[#34C759]' : 'text-[#FF3B30]'}`}>{fmtReal(getGenericValue(item, 'valor'))}</p>
                       </div>
-                      <div className="flex gap-2 items-center flex-wrap">
-                        <span className="text-[10px] text-slate-400 font-bold uppercase">{getGenericValue(item, 'data')}</span>
-                        {activeTab === 'despesas' && tipo && <span className="text-[9px] bg-blue-50 text-blue-600 px-2 py-0.5 rounded font-bold uppercase border border-blue-100">{tipo}</span>}
+
+                      <div className="flex items-center gap-3 mb-3">
+                        <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wide">{getGenericValue(item, 'data')}</span>
+                        {activeTab === 'despesas' && tipo && (
+                          <span className="text-[9px] bg-blue-50 text-[#007AFF] px-2 py-0.5 rounded-md font-bold uppercase border border-blue-100">{tipo}</span>
+                        )}
                       </div>
-                      {activeTab === 'despesas' && orc && <div className="mt-2"><span className="text-[10px] bg-slate-100 text-slate-600 px-2 py-1 rounded-lg font-bold border border-slate-200 inline-block uppercase italic">{orc}</span></div>}
+
+                      {(orc || ln || lp) && (
+                        <div className="flex items-center justify-between pt-3 border-t border-slate-50">
+                          <div className="flex-1">
+                            {activeTab === 'despesas' && orc && (
+                              <span className="text-[10px] bg-slate-100 text-slate-500 px-2 py-1 rounded-lg font-semibold border border-slate-200 inline-block uppercase italic tracking-tighter">{orc}</span>
+                            )}
+                          </div>
+                          <div className="flex gap-2">
+                            {ln && <IOSFileBtn href={ln} icon="doc" label="NF" />}
+                            {lp && <IOSFileBtn href={lp} icon="cash" label="PAG" />}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -309,16 +404,18 @@ export default function App() {
         )}
       </div>
 
-      <nav className="fixed bottom-0 left-0 right-0 bg-white/80 backdrop-blur-2xl border-t border-slate-200 px-6 py-4 flex justify-around items-center z-50">
-        <TabItem active={activeTab === 'inicio'} onClick={() => setActiveTab('inicio')} label="Início" />
-        <TabItem active={activeTab === 'depositos'} onClick={() => setActiveTab('depositos')} label="Depósitos" />
-        <TabItem active={activeTab === 'despesas'} onClick={() => setActiveTab('despesas')} label="Despesas" />
-        <TabItem active={activeTab === 'tipos'} onClick={() => setActiveTab('tipos')} label="Tipos" />
+      <nav className="fixed bottom-0 left-0 right-0 bg-white/80 backdrop-blur-2xl border-t border-slate-200 px-2 py-4 flex justify-around items-center z-50 shadow-2xl">
+        <TabItem active={activeTab === 'inicio'} onClick={() => setActiveTab('inicio')} label="Home" icon="home" />
+        <TabItem active={activeTab === 'saldo'} onClick={() => setActiveTab('saldo')} label="Saldo" icon="chart" />
+        <TabItem active={activeTab === 'depositos'} onClick={() => setActiveTab('depositos')} label="Entradas" icon="plus" />
+        <TabItem active={activeTab === 'despesas'} onClick={() => setActiveTab('despesas')} label="Saídas" icon="minus" />
+        <TabItem active={activeTab === 'tipos'} onClick={() => setActiveTab('tipos')} label="Tipos" icon="pie" />
       </nav>
     </main>
   );
 }
 
+// SUBCOMPONENTES
 function IOSCard({ label, value, color = "text-black" }: any) {
   return (
     <div className="bg-white p-5 rounded-2xl border border-slate-200 flex justify-between items-center shadow-sm">
@@ -328,11 +425,32 @@ function IOSCard({ label, value, color = "text-black" }: any) {
   );
 }
 
-function TabItem({ active, onClick, label }: any) {
+function TabItem({ active, onClick, label, icon }: any) {
+  const icons: any = {
+    home: <path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011-1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z" />,
+    chart: <path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z" />,
+    plus: <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-11a1 1 0 10-2 0v2H7a1 1 0 100 2h2v2a1 1 0 102 0v-2h2a1 1 0 100-2h-2V7z" clipRule="evenodd" />,
+    minus: <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM7 9a1 1 0 000 2h6a1 1 0 100-2H7z" clipRule="evenodd" />,
+    pie: <><path d="M2 10a8 8 0 018-8v8h8a8 8 0 11-16 0z" /><path d="M12 2.252A8.001 8.001 0 0117.748 8H12V2.252z" /></>
+  };
+
   return (
     <button onClick={onClick} className={`flex flex-col items-center gap-1 transition-all ${active ? 'text-[#007AFF]' : 'text-slate-300'}`}>
-      <div className="w-6 h-6 bg-current rounded-md opacity-20" />
+      <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 20 20">{icons[icon]}</svg>
       <span className="text-[10px] font-bold">{label}</span>
     </button>
+  );
+}
+
+function IOSFileBtn({ href, icon, label }: any) {
+  return (
+    <a href={href} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1.5 px-2 py-1 bg-slate-50 hover:bg-slate-100 rounded-lg border border-slate-200 transition-colors group">
+      {icon === 'doc' ? (
+        <svg className="w-3.5 h-3.5 text-slate-400 group-hover:text-[#007AFF]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" /></svg>
+      ) : (
+        <svg className="w-3.5 h-3.5 text-slate-400 group-hover:text-[#34C759]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+      )}
+      {label && <span className="text-[9px] font-bold text-slate-500 uppercase">{label}</span>}
+    </a>
   );
 }
